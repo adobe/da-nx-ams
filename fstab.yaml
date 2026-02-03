@@ -1,4 +1,4 @@
 mountpoints:
   /:
-    url: https://content-stg.ssa-da.live/ams-eds/nexter-ams/
+    url: https://content-stg.ssa-da.live/ams-eds/da-nx-ams/
     type: markup
