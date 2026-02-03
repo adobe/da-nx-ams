@@ -1,4 +1,4 @@
-export const AEM_ORIGIN = 'https://admin.hlx.page';
+export const AEM_ORIGIN = 'https://admin.gov-aem.page';
 
 export const SUPPORTED_FILES = {
   html: 'text/html',
@@ -14,8 +14,8 @@ export const SUPPORTED_FILES = {
 
 const DA_ADMIN_ENVS = {
   local: 'http://localhost:8787',
-  stage: 'https://stage-admin.da.live',
-  prod: 'https://admin.da.live',
+  stage: 'https://stg-admin.ssa-da.live',
+  prod: 'https://admin.ssa-da.live',
 };
 
 function getDaEnv(location, key, envs) {
@@ -28,7 +28,7 @@ function getDaEnv(location, key, envs) {
   }
   const env = envs[localStorage.getItem(key) || 'prod'];
   // TODO: INFRA
-  return location.origin === 'https://da.page' ? env.replace('.live', '.page') : env;
+  return location.origin === 'https://ssa-da.page' ? env.replace('.live', '.page') : env;
 }
 
 export const getDaAdmin = (() => {
