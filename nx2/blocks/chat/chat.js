@@ -50,7 +50,16 @@ class NxChat extends LitElement {
     if (key !== undefined) {
       const prevId = this._keyedItemIds.get(key);
       const without = (this._items ?? []).filter((i) => i.id !== prevId);
-      if (item.id) {
+      const matchesPinned = item.id
+        && typeof item.selFrom === 'number'
+        && typeof item.selTo === 'number'
+        && without.some((i) => i.pinned
+          && i.selFrom === item.selFrom
+          && i.selTo === item.selTo);
+      if (matchesPinned) {
+        this._keyedItemIds.delete(key);
+        this._items = without;
+      } else if (item.id) {
         this._keyedItemIds.set(key, item.id);
         this._items = [...without, item];
       } else {
@@ -62,9 +71,13 @@ class NxChat extends LitElement {
     }
   };
 
-  _onSetPrompt = ({ detail }) => {
-    this._sendPrompt(detail.text, { autoSend: detail.autoSend });
-  };
+  setPrompt(text, { autoSend = false } = {}) {
+    if (this.connected) {
+      this._sendPrompt(text, { autoSend });
+    } else {
+      this._pendingPrompt = { text, autoSend };
+    }
+  }
 
   addAttachment(item) {
     const current = this._items ?? [];
@@ -192,7 +205,6 @@ class NxChat extends LitElement {
 
     this._controller.connect().then(() => this._controller.loadInitialMessages());
     document.addEventListener('nx-add-to-chat', this._onAddToChat);
-    document.addEventListener('nx-set-prompt', this._onSetPrompt);
   }
 
   disconnectedCallback() {
@@ -204,7 +216,6 @@ class NxChat extends LitElement {
     this._controller?.destroy();
     document.removeEventListener('keydown', this._onApprovalKeydown);
     document.removeEventListener('nx-add-to-chat', this._onAddToChat);
-    document.removeEventListener('nx-set-prompt', this._onSetPrompt);
   }
 
   _pendingApproval() {
@@ -253,6 +264,11 @@ class NxChat extends LitElement {
       } else {
         document.removeEventListener('keydown', this._onApprovalKeydown);
       }
+    }
+    if (changed.has('connected') && this.connected && this._pendingPrompt) {
+      const { text, autoSend } = this._pendingPrompt;
+      this._pendingPrompt = null;
+      this._sendPrompt(text, { autoSend });
     }
   }
 
@@ -408,7 +424,33 @@ class NxChat extends LitElement {
   _handlePillRemove({ detail: { id } }) {
     const removed = (this._items ?? []).find((i) => i.id === id);
     if (removed?.thumbnail) URL.revokeObjectURL(removed.thumbnail);
+    for (const [key, mappedId] of this._keyedItemIds) {
+      if (mappedId === id) this._keyedItemIds.delete(key);
+    }
     this._items = (this._items ?? []).filter((item) => item.id !== id);
+  }
+
+  _handlePillActivate({ detail: { id } }) {
+    const item = (this._items ?? []).find((i) => i.id === id);
+    if (!item) return;
+    const { selFrom, selTo, selectionType, blockName, proseIndex } = item;
+    if (typeof selFrom !== 'number' || typeof selTo !== 'number') return;
+    document.dispatchEvent(new CustomEvent('nx-highlight-selection', {
+      detail: { selFrom, selTo, selectionType, blockName, proseIndex },
+    }));
+  }
+
+  _handlePillPin({ detail: { id } }) {
+    const items = this._items ?? [];
+    const target = items.find((i) => i.id === id);
+    if (!target || !target.pinnable || target.pinned) return;
+    for (const [key, mappedId] of this._keyedItemIds) {
+      if (mappedId === id) this._keyedItemIds.delete(key);
+    }
+    const pinnedId = `pinned-${crypto.randomUUID()}`;
+    this._items = items.map((item) => (
+      item.id === id ? { ...item, id: pinnedId, pinned: true } : item
+    ));
   }
 
   _onDragEnter(e) {
@@ -511,6 +553,8 @@ class NxChat extends LitElement {
           <nx-chat-pills
             .items=${this._items}
             @nx-pill-remove=${this._handlePillRemove}
+            @nx-pill-pin=${this._handlePillPin}
+            @nx-pill-activate=${this._handlePillActivate}
           ></nx-chat-pills>` : nothing}
         <textarea
           name="chat-input"

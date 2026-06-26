@@ -2,32 +2,17 @@ import { html, nothing } from 'da-lit';
 import { AGENT_EVENT, ROLE, TOOL_INPUT, TOOL_STATE } from './constants.js';
 import { getConfig } from '../../scripts/nx.js';
 import { parseDirectives } from './utils/parse.js';
-import { fileIconName } from './utils/icons.js';
+import { pillIconName } from './utils/icons.js';
+import { linkifyBareUrls, sanitizeLinks } from './utils/links.js';
 
 const { codeBase } = getConfig();
 
 const { unified, remarkParse, remarkGfmNoLink, mdast2hast, hastToDom } = await import('../../deps/mdast/dist/index.js');
 
-const SAFE_URL = /^https?:\/\//i;
-
 const parser = unified().use(remarkParse).use(remarkGfmNoLink);
 
-function sanitizeLinks(node) {
-  if (node.type === 'element' && node.tagName === 'a') {
-    const href = node.properties?.href ?? '';
-    node.properties = {
-      ...node.properties,
-      href: SAFE_URL.test(href) ? href : '#',
-      target: '_blank',
-      rel: ['noopener', 'noreferrer'],
-    };
-  }
-  node.children?.forEach(sanitizeLinks);
-  return node;
-}
-
 function toDOM(hast) {
-  return hastToDom(sanitizeLinks(hast), { fragment: true });
+  return hastToDom(sanitizeLinks(linkifyBareUrls(hast)), { fragment: true });
 }
 
 function renderMessageContent(text) {
@@ -107,17 +92,22 @@ function renderAssistantMessage(msg, toolCards) {
 }
 
 function renderSelectionPills(msg) {
-  const contextItem = (name) => html`
+  const contextItem = (name, iconName) => html`
     <li class="selection-context-item">
       <svg class="selection-icon" viewBox="0 0 20 20" aria-hidden="true">
-        <use href="${codeBase}/img/icons/${fileIconName(name)}.svg#icon"></use>
+        <use href="${codeBase}/img/icons/${iconName}.svg#icon"></use>
       </svg>
       <span>${name}</span>
     </li>`;
 
   const items = [
-    ...(msg.selectionContext ?? []).map(({ blockName }) => contextItem(blockName)),
-    ...(msg.attachmentsMeta ?? []).map(({ fileName }) => contextItem(fileName)),
+    ...(msg.selectionContext ?? []).map((sc) => {
+      const name = sc.blockName || 'Selection';
+      return contextItem(name, pillIconName(sc.type, name));
+    }),
+    ...(msg.attachmentsMeta ?? []).map(({ fileName }) => (
+      contextItem(fileName, pillIconName(undefined, fileName))
+    )),
   ];
   if (items.length === 1) {
     return html`<ul class="selection-context-list" aria-label="Attached context">${items[0]}</ul>`;
