@@ -1,22 +1,16 @@
 import { LitElement, html, nothing } from 'da-lit';
-import { getConfig } from '../../../../scripts/nexter.js';
-import getStyle from '../../../../utils/styles.js';
-import getSvg from '../../../../utils/svg.js';
-import { loadIms } from '../../../../utils/ims.js';
+
+import { loadStyle } from '../../../../../nx2/utils/utils.js';
+import { loadIms } from '../../../../../nx2/utils/api.js';
+
 import { archiveProject, copyProject } from './index.js';
 
 import './pagination.js';
 import './filter-bar.js';
 import createProjectData from './project-data.js';
 
-const style = await getStyle(import.meta.url);
-
-const { nxBase: nx } = getConfig();
-
-const ICONS = [
-  `${nx}/public/icons/S2_Icon_Copy_20_N.svg`,
-  `${nx}/public/icons/S2_Icon_ProjectAddInto_20_N.svg`,
-];
+const style = await loadStyle(import.meta.url);
+const buttons = await loadStyle(new URL('./buttons.css', import.meta.url).href);
 
 const ITEMS_PER_PAGE = 25;
 const DRAFT_STATUS_HTML = html`<p class="draft-project"><strong>Draft</strong></p>`;
@@ -74,6 +68,7 @@ class NxLocDashboard extends LitElement {
 
   async updateProjectsToDisplay(signal) {
     try {
+      // eslint-disable-next-line max-len
       this._projectsToDisplay = (await this._projectData?.getDetailsForProjects(this._showFrom, this._showTo, signal)) ?? [];
     } finally {
       this._isLoading = false;
@@ -133,8 +128,7 @@ class NxLocDashboard extends LitElement {
     this._showTo = ITEMS_PER_PAGE;
     this._currentPage = 0;
     this._isLoading = true;
-    this.shadowRoot.adoptedStyleSheets = [style];
-    getSvg({ parent: this.shadowRoot, paths: ICONS });
+    this.shadowRoot.adoptedStyleSheets = [buttons, style];
     // not awaiting to not block UI
     this.ensureInitialized();
   }
@@ -192,7 +186,7 @@ class NxLocDashboard extends LitElement {
       this.updateShowRangeToFirstPage();
       await this.updateProjectsToDisplay();
       this.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } catch (error) {
+    } catch (e) {
       this.setErrorMessage(`Failed to copy project: "${project.title}"`);
     } finally {
       this._isLoading = false;
@@ -211,7 +205,7 @@ class NxLocDashboard extends LitElement {
       // Stay on current page if possible, otherwise go to last page
       this.updateShowRangePreservingPage();
       await this.updateProjectsToDisplay();
-    } catch (error) {
+    } catch (e) {
       this.setErrorMessage(`Failed to archive project: "${project.title}"`);
     } finally {
       this._isLoading = false;
@@ -255,8 +249,8 @@ class NxLocDashboard extends LitElement {
   renderArchiveButton(project) {
     if (project.isArchived) return nothing;
     return html`<button class="archive-btn" @click=${() => this.handleArchive(project)}>
-      <svg class="icon">
-        <use href="#S2_Icon_ProjectAddInto_20_N"/>
+      <svg class="icon" viewBox="0 0 20 20">
+        <use href="/img/icons/s2-icon-projectaddinto-20-n.svg#icon"/>
       </svg>
     </button>`;
   }
@@ -291,7 +285,11 @@ class NxLocDashboard extends LitElement {
             ${this.renderStatus(project)}
           </div>
           <div class="project-actions">
-            <button class="copy-btn" @click=${() => this.handleCopy(project)}><svg class="icon"><use href="#S2_Icon_Copy_20_N"/></svg></button>
+            <button class="copy-btn" @click=${() => this.handleCopy(project)}>
+              <svg class="icon" viewBox="0 0 20 20">
+                <use href="/img/icons/s2-icon-copy-20-n.svg#icon"/>
+              </svg>
+            </button>
             ${this.renderArchiveButton(project)}
           </div>
         </div>
@@ -326,7 +324,9 @@ class NxLocDashboard extends LitElement {
   }
 
   render() {
-    const showNoResults = this._projectData?.hasFiltersWithNoResults() && !this._error && !this._isLoading;
+    const showNoResults = this._projectData?.hasFiltersWithNoResults()
+      && !this._error
+      && !this._isLoading;
 
     return html`
       <nx-loc-actions

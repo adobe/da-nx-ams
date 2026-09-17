@@ -15,13 +15,14 @@
  * from Adobe.
  ************************************************************************* */
 
-import { Queue } from '../../../../public/utils/tree.js';
-import createProjectCache from './project-cache.js';
-import { daFetch } from '../../../../utils/daFetch.js';
-import { DA_ORIGIN } from '../../../../public/utils/constants.js';
-import { fetchProject } from './index.js';
+import { daFetch } from '../../../../../nx2/utils/api.js';
+import { DA_ADMIN } from '../../../../../nx2/utils/utils.js';
 
-const MAX_CONCURRENT_REQUESTS = 50;
+import { Queue } from '../../../../../nx2/public/utils/tree.js';
+
+import { fetchProject } from './index.js';
+import createProjectCache from './project-cache.js';
+import { MAX_CONCURRENT_READS } from '../../project/index.js';
 
 const createProjectData = async ({
   org, site, currentUser, initialType, handleError, initialSignal,
@@ -76,7 +77,7 @@ const createProjectData = async ({
   };
 
   const fetchProjectList = async (signal, type) => {
-    const resp = await daFetch(`${DA_ORIGIN}/list/${org}/${site}/.da/translation/${type}`, { signal });
+    const resp = await daFetch({ url: `${DA_ADMIN}/list/${org}/${site}/.da/translation/${type}`, opts: { signal } });
     if (!resp.ok) {
       setError(resp.status, resp.statusText);
       return { projects: [] };
@@ -94,6 +95,7 @@ const createProjectData = async ({
 
   const getProjectListForType = async (signal) => {
     if (projectListsByType[activeListType] === null) {
+      // eslint-disable-next-line max-len
       projectListsByType[activeListType] = (await fetchProjectList(signal, activeListType)).projects;
       populateLastModifiedMap(projectListsByType[activeListType]);
     }
@@ -132,7 +134,9 @@ const createProjectData = async ({
     return selectedStatuses.includes(projectStatus);
   };
 
-  const matchesOwnership = (project, viewAllProjects, user) => viewAllProjects || project.createdBy === user;
+  const matchesOwnership = (project, viewAllProjects, user) => (
+    viewAllProjects || project.createdBy === user
+  );
 
   const projectMatchesFilters = (project) => matchesSearchQuery(project, filters.searchQuery)
       && matchesDateRange(project, filters.startDate, filters.endDate)
@@ -174,7 +178,7 @@ const createProjectData = async ({
     const queue = new Queue(async (project) => {
       const result = await fetchProjectDetails(project, signal);
       results.push(result);
-    }, MAX_CONCURRENT_REQUESTS);
+    }, MAX_CONCURRENT_READS);
 
     await Promise.all(projectList.map((project) => queue.push(project)));
     return results.sort((a, b) => b.createdOn - a.createdOn);
@@ -202,7 +206,11 @@ const createProjectData = async ({
 
     if (projectData) {
       // Enrich and cache (returns enriched data)
-      const enrichedData = await cache.setCachedData(cleanPath, projectData, projectData.lastModified);
+      const enrichedData = await cache.setCachedData(
+        cleanPath,
+        projectData,
+        projectData.lastModified,
+      );
       if (hasAnyFilters) {
         if (projectMatchesFilters(enrichedData)) {
           filteredProjectList.unshift(enrichedData);
@@ -281,7 +289,9 @@ const createProjectData = async ({
     if (hasAnyFilters) {
       return filteredProjectList.slice(from, to);
     }
-    return Promise.all(projectList.slice(from, to).map((project) => fetchProjectDetails(project, signal)));
+    return Promise.all(
+      projectList.slice(from, to).map((project) => fetchProjectDetails(project, signal)),
+    );
   };
 
   const hasFiltersWithNoResults = () => hasAnyFilters && getTotalCount() === 0;

@@ -1,3 +1,11 @@
+import { loadStyle } from '../../../nx2/utils/utils.js';
+
+const style = await loadStyle(import.meta.url);
+
+if (!document.adoptedStyleSheets.includes(style)) {
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, style];
+}
+
 async function personalize(fg) {
   const { loadIms } = await import('../../utils/ims.js');
   try {
@@ -8,6 +16,7 @@ async function personalize(fg) {
     nameSpan.textContent = profile.first_name;
     heading.replaceChildren('Welcome, ', nameSpan);
   } catch {
+    // eslint-disable-next-line no-console
     console.log('Personalization went south');
   }
 }

@@ -1,4 +1,46 @@
-import { handleSignIn, loadIms } from "../../../utils/ims.js";
+import { handleSignIn, loadIms } from '../../../utils/ims.js';
+import { MESSAGE_TYPES } from '../../../utils/message-types.js';
+
+const DA_LIVE_PREVIEW_ENVS = {
+  local: 'localhost:8000',
+  stage: 'stage-preview.da.live',
+  prod: 'preview.da.live',
+};
+
+export async function getToken() {
+  const ims = await loadIms(true);
+  if (ims.anonymous) return null;
+  const { token } = ims.accessToken;
+  return token;
+}
+
+function getLivePreviewDomain() {
+  const { href } = window.location;
+  const query = new URL(href).searchParams.get('da-live-preview');
+  if (query && query === 'reset') {
+    localStorage.removeItem('da-live-preview');
+  } else if (query) {
+    localStorage.setItem('da-live-preview', query);
+  }
+  const env = DA_LIVE_PREVIEW_ENVS[localStorage.getItem('da-live-preview') || 'prod'];
+  return window.location.origin === 'https://da.page' ? env.replace('.live', '.page') : env;
+}
+
+function getLivePreviewUrl(owner, repo) {
+  const domain = getLivePreviewDomain();
+  const protocol = domain.startsWith('localhost') ? 'http' : 'https';
+  return `${protocol}://main--${repo}--${owner}.${domain}`;
+}
+
+export async function getImageCookie(owner, repo) {
+  const token = await getToken();
+  if (token) {
+    await fetch(`${getLivePreviewUrl(owner, repo)}/gimme_cookie`, {
+      credentials: 'include',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+}
 
 export function findChangedNodes(oldDoc, newDoc) {
   const changes = [];
@@ -35,8 +77,8 @@ export function findChangedNodes(oldDoc, newDoc) {
     if (oldNode.isText || newNode.isText) {
       const oldMarks = oldNode.marks || [];
       const newMarks = newNode.marks || [];
-      if (oldMarks.length !== newMarks.length || 
-          !oldMarks.every((m, i) => m.eq(newMarks[i]))) {
+      if (oldMarks.length !== newMarks.length
+          || !oldMarks.every((m, i) => m.eq(newMarks[i]))) {
         changes.push({
           type: 'marks',
           pos,
@@ -64,7 +106,7 @@ export function findChangedNodes(oldDoc, newDoc) {
     let oldPos = pos + 1;
     let newPos = pos + 1;
 
-    for (let i = 0; i < minSize; i++) {
+    for (let i = 0; i < minSize; i += 1) {
       const oldChild = oldNode.child(i);
       const newChild = newNode.child(i);
       traverse(oldChild, newChild, oldPos);
@@ -74,7 +116,7 @@ export function findChangedNodes(oldDoc, newDoc) {
 
     // Handle added nodes
     if (newSize > oldSize) {
-      for (let i = oldSize; i < newSize; i++) {
+      for (let i = oldSize; i < newSize; i += 1) {
         const newChild = newNode.child(i);
         changes.push({
           type: 'added',
@@ -87,7 +129,7 @@ export function findChangedNodes(oldDoc, newDoc) {
 
     // Handle deleted nodes
     if (oldSize > newSize) {
-      for (let i = newSize; i < oldSize; i++) {
+      for (let i = newSize; i < oldSize; i += 1) {
         const oldChild = oldNode.child(i);
         changes.push({
           type: 'deleted',
@@ -111,16 +153,16 @@ export function findCommonEditableAncestor(view, changes, prevState) {
 
   // For each change, find its editable ancestor
   const editableAncestors = [];
-  
+
   for (const change of changes) {
     const isDeletedNode = change.type === 'deleted';
     try {
       const doc = isDeletedNode ? prevState.doc : view.state.doc;
       const $pos = doc.resolve(change.pos);
       let editableAncestor = null;
-      
+
       // Walk up the tree to find an editable node
-      for (let depth = $pos.depth; depth > 0; depth--) {
+      for (let { depth } = $pos; depth > 0; depth -= 1) {
         const node = $pos.node(depth);
         if (EDITABLE_TYPES.includes(node.type.name)) {
           editableAncestor = {
@@ -132,7 +174,7 @@ export function findCommonEditableAncestor(view, changes, prevState) {
           // break;
         }
       }
-      
+
       if (editableAncestor) {
         editableAncestors.push(editableAncestor);
       } else if (!isDeletedNode) {
@@ -148,10 +190,10 @@ export function findCommonEditableAncestor(view, changes, prevState) {
 
   // Check if all changes share the same editable ancestor
   if (editableAncestors.length === 0) return null;
-  
+
   const firstPos = editableAncestors[0].pos;
   const allSameAncestor = editableAncestors.every((ancestor) => ancestor.pos === firstPos);
-  
+
   return allSameAncestor ? editableAncestors[0] : null;
 }
 
@@ -178,41 +220,34 @@ export function generateColor(name, hRange = [0, 360], sRange = [60, 80], lRange
 export async function checkPermissions(sourceUrl) {
   const token = await getToken();
   const resp = await fetch(sourceUrl, {
-    method: "HEAD",
+    method: 'HEAD',
     headers: { Authorization: `Bearer ${token}` },
   });
 
   // If child actions header is present, use it.
   // This is a hint as to what can be done with the children.
-  if (resp.headers?.get("x-da-child-actions")) {
+  if (resp.headers?.get('x-da-child-actions')) {
     resp.permissions = resp.headers
-      .get("x-da-child-actions")
-      .split("=")
+      .get('x-da-child-actions')
+      .split('=')
       .pop()
-      .split(",");
+      .split(',');
     return resp;
   }
 
   // Use the self actions hint if child actions are not present.
-  if (resp.headers?.get("x-da-actions")) {
+  if (resp.headers?.get('x-da-actions')) {
     resp.permissions = resp.headers
-      ?.get("x-da-actions")
-      ?.split("=")
+      ?.get('x-da-actions')
+      ?.split('=')
       .pop()
-      .split(",");
+      .split(',');
     return resp;
   }
 
   // Support legacy admin.role.all
-  resp.permissions = ["read", "write"];
+  resp.permissions = ['read', 'write'];
   return resp;
-}
-
-export async function getToken() {
-  const ims = await loadIms(true);
-  if (ims.anonymous) return null;
-  const { token } = ims.accessToken;
-  return token;
 }
 
 export async function signIn() {
@@ -226,9 +261,28 @@ export async function signIn() {
           if (url.hash.includes('from_ims')) {
             window.location.reload();
           }
-        } catch (e) {}
-      }
+        } catch (_) {
+          // Ignore invalid URLs
+        }
+      };
       window.addEventListener('message', signInListener);
     });
+  }
+}
+
+export async function handlePreview(ctx) {
+  const path = ctx.path.endsWith('/') ? `${ctx.path}index` : `${ctx.path}`;
+  const url = `https://admin.hlx.page/preview/${ctx.owner}/${ctx.repo}/main${path}`;
+  const token = await getToken();
+  const resp = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+  if (!resp.ok) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to preview:', resp.statusText);
+    const error = `Failed to preview: ${resp.statusText}`;
+    ctx.port.postMessage({
+      type: MESSAGE_TYPES.PREVIEW, payload: { ok: false, error },
+    });
+  } else {
+    ctx.port.postMessage({ type: MESSAGE_TYPES.PREVIEW, payload: { ok: true } });
   }
 }

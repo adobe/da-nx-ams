@@ -1,7 +1,7 @@
 import { DA_ORIGIN, AEM_ORIGIN } from '../../utils/constants.js';
 import { Queue } from '../../utils/tree.js';
 
-const LANG_CONF = '/.da/translate-v2.json';
+const LANG_CONF = '/.da/translate.json';
 
 export const [setContext, getContext] = (() => {
   let ctx;
@@ -79,7 +79,9 @@ export async function publishPages(pages) {
         nextUrl.inProgress = true;
         queue.push(nextUrl);
       } else {
+        // eslint-disable-next-line no-console
         console.log('out');
+        // eslint-disable-next-line no-console
         console.log(pages);
         const finished = pages.every((url) => url.status);
         if (finished) {

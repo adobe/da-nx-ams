@@ -1,7 +1,8 @@
-import { AEM_ORIGIN } from '../../../public/utils/constants.js';
-import { daFetch } from '../../../utils/daFetch.js';
+import { AEM_ORIGIN, DA_ORIGIN } from '../../../../nx2/public/utils/constants.js';
+import { daFetch, source } from '../../../../nx2/utils/api.js';
+import { loadIms } from '../../../../nx2/utils/ims.js';
 import { mergeCopy, overwriteCopy } from '../../loc/project/index.js';
-import { Queue } from '../../../public/utils/tree.js';
+import { Queue } from '../../../../nx2/public/utils/tree.js';
 
 const SNAPSHOT_SCHEDULER_URL = 'https://helix-snapshot-scheduler-prod.adobeaem.workers.dev';
 
@@ -12,7 +13,19 @@ function formatError(resp) {
   if (resp.status === 401 || resp.status === 403) {
     return { error: 'You do not have privledges to take this snapshot action.' };
   }
-  return { error: 'Not a valid project.' };
+  const xErr = resp.headers.get('X-Error');
+  if (xErr) return { error: xErr };
+  return { error: `Unknown error. Status: ${resp.status}` };
+}
+
+async function pollJob(jobUrl, interval = 750) {
+  while (true) {
+    const resp = await daFetch({ url: jobUrl });
+    if (!resp.ok) return;
+    const job = await resp.json();
+    if (job.state === 'stopped') return;
+    await new Promise((resolve) => { setTimeout(resolve, interval); });
+  }
 }
 
 function formatResources(name, resources) {
@@ -20,13 +33,25 @@ function formatResources(name, resources) {
     path: res.path,
     aemPreview: `https://main--${site}--${org}.aem.page${res.path}`,
     url: `https://${name}--main--${site}--${org}.aem.reviews${res.path}`,
+    aemLive: `https://main--${site}--${org}.aem.live${res.path}`,
+    daEdit: `https://da.live/edit#/${org}/${site}${res.path}`,
+    daSnapshotEdit: `https://da.live/edit#/${org}/${site}/.snapshots/${name}${res.path}`,
   }));
+}
+
+function pathnameAllowedForSnapshot(pathname) {
+  if (pathname.endsWith('.html')
+    || pathname.endsWith('.json')
+    || pathname.endsWith('.svg')) return true;
+  const basename = pathname.slice(pathname.lastIndexOf('/') + 1);
+  return !/\.[^./]+$/.test(basename);
 }
 
 function filterPaths(hrefs) {
   return hrefs.reduce((acc, href) => {
     try {
       const { pathname } = new URL(href);
+      if (!pathnameAllowedForSnapshot(pathname)) return acc;
       acc.push(pathname.endsWith('.html') ? pathname.replace('.html', '') : pathname);
     } catch {
       // do nothing
@@ -50,7 +75,7 @@ export async function saveManifest(name, manifestToSave) {
     opts.headers = { 'Content-Type': 'application/json' };
   }
 
-  const resp = await daFetch(`${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}`, opts);
+  const resp = await daFetch({ url: `${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}`, opts });
   if (!resp.ok) return formatError(resp);
   const { manifest } = await resp.json();
   manifest.resources = formatResources(name, manifest.resources);
@@ -61,13 +86,13 @@ export async function reviewSnapshot(name, state) {
   const opts = { method: 'POST' };
   // Review status
   const review = `?review=${state}&keepResources=true`;
-  const resp = await daFetch(`${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}${review}`, opts);
+  const resp = await daFetch({ url: `${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}${review}`, opts });
   if (!resp.ok) return formatError(resp);
   return { success: true };
 }
 
 export async function fetchManifest(name) {
-  const resp = await daFetch(`${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}`);
+  const resp = await daFetch({ url: `${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}` });
   if (!resp.ok) return formatError(resp);
   const { manifest } = await resp.json();
   manifest.resources = formatResources(name, manifest.resources);
@@ -75,7 +100,7 @@ export async function fetchManifest(name) {
 }
 
 export async function fetchSnapshots() {
-  const resp = await daFetch(`${AEM_ORIGIN}/snapshot/${org}/${site}/main`);
+  const resp = await daFetch({ url: `${AEM_ORIGIN}/snapshot/${org}/${site}/main` });
   if (!resp.ok) return formatError(resp);
   const json = await resp.json();
 
@@ -86,18 +111,42 @@ export async function fetchSnapshots() {
   return { snapshots };
 }
 
-export async function deleteSnapshot(name, paths = ['/*']) {
-  const results = await Promise.all(paths.map(async (path) => {
-    const opts = { method: 'DELETE' };
-    const resp = await daFetch(`${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}${path}`, opts);
-    if (!resp.ok) return formatError(resp);
-    return { success: resp.status };
-  }));
-  const firstError = results.find((result) => result.error);
-  if (firstError) return firstError;
-  // once all resources are deleted, delete the snapshot as well
+async function deleteDaSnapshotDirectory(name) {
+  const resp = await source.delete(`/${org}/${site}/.snapshots/${name}`);
+  if (!resp.ok) return formatError(resp);
+  return { success: true };
+}
+
+export async function deleteSnapshotFiles(name, paths = ['/*']) {
+  const opts = {
+    method: 'POST',
+    body: JSON.stringify({ delete: true, paths }),
+    headers: { 'Content-Type': 'application/json' },
+  };
+  const resp = await daFetch({ url: `${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}/*`, opts });
+  if (!resp.ok && resp.status !== 404) return formatError(resp);
+
+  // Handle async job (202) by polling until complete
+  if (resp.status === 202) {
+    const { links } = await resp.json();
+    if (links?.self) {
+      await pollJob(links.self);
+    }
+  }
+
+  return { success: true };
+}
+
+export async function deleteSnapshot(name, paths = []) {
+  const result = await deleteSnapshotFiles(name, paths);
+  if (!result.success) return result;
+
+  // delete any files in the .snapshots directory
+  deleteDaSnapshotDirectory(name);
+
+  // once all resources are deleted, delete the snapshot
   const opts = { method: 'DELETE' };
-  const resp = await daFetch(`${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}`, opts);
+  const resp = await daFetch({ url: `${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}`, opts });
   if (!resp.ok) return formatError(resp);
   return { success: true };
 }
@@ -113,8 +162,8 @@ export async function updatePaths(name, currPaths, editedHrefs) {
 
   // Handle deletes
   if (removed.length > 0) {
-    const deleteResult = await deleteSnapshot(name, removed);
-    if (deleteResult.error) return deleteResult;
+    const deleteResult = await deleteSnapshotFiles(name, removed);
+    if (!deleteResult.success) return deleteResult;
   }
 
   // Handle adds
@@ -126,8 +175,16 @@ export async function updatePaths(name, currPaths, editedHrefs) {
     };
 
     // This is technically a bulk ops request
-    const resp = await daFetch(`${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}/*`, opts);
+    const resp = await daFetch({ url: `${AEM_ORIGIN}/snapshot/${org}/${site}/main/${name}/*`, opts });
     if (!resp.ok) return formatError(resp);
+
+    // Handle async job (202) by polling until complete
+    if (resp.status === 202) {
+      const { links } = await resp.json();
+      if (links?.self) {
+        await pollJob(links.self);
+      }
+    }
   }
 
   // The formatting of the response will be bulk job-like,
@@ -136,13 +193,42 @@ export async function updatePaths(name, currPaths, editedHrefs) {
   return formatResources(name, toFormat);
 }
 
-export async function copyManifest(name, resources, direction) {
-  // The action to take
+export function appendHtmlUnlessExtension(pathname) {
+  const basename = pathname.slice(pathname.lastIndexOf('/') + 1);
+  return /\.[^./]+$/.test(basename) ? pathname : `${pathname}.html`;
+}
+
+async function directDaCopy(url) {
+  const srcResp = await source.get(url.source);
+  if (!srcResp.ok) {
+    url.status = 'error';
+    return;
+  }
+  const data = await srcResp.arrayBuffer();
+  let type = srcResp.headers.get('content-type')?.split(';')[0]?.trim() || '';
+  if (!type || type === 'text/plain') {
+    type = url.destination.includes('.json') ? 'application/json' : 'application/octet-stream';
+  }
+  const blob = new Blob([data], { type });
+  const body = new FormData();
+  body.append('data', blob);
+  const resp = await daFetch({ url: `${DA_ORIGIN}/source${url.destination}`, opts: { method: 'POST', body } });
+  url.status = resp.ok ? 'success' : 'error';
+}
+
+export async function copyManifest(name, resources, direction, mode = 'merge') {
   const copyUrl = async (url) => {
-    if (url.source.endsWith('.html')) {
-      await mergeCopy(url, `Snapshot ${direction}`);
-    } else {
+    if (!url.source.endsWith('.html')) {
+      await directDaCopy(url);
+      return;
+    }
+    if (mode === 'overwrite') {
       await overwriteCopy(url, `Snapshot ${direction}`);
+    } else {
+      const labels = (direction === 'fork')
+        ? { labelLocal: 'Snapshot', labelUpstream: 'Main' }
+        : { labelLocal: 'Main', labelUpstream: 'Snapshot' };
+      await mergeCopy(url, `Snapshot ${direction}`, labels);
     }
   };
 
@@ -152,7 +238,7 @@ export async function copyManifest(name, resources, direction) {
 
       const path = url.pathname.endsWith('/') ? `${url.pathname}index` : url.pathname;
 
-      const extPath = path.endsWith('.json') ? path : `${path}.html`;
+      const extPath = appendHtmlUnlessExtension(path);
 
       const main = `/${org}/${site}${extPath}`;
       const fork = `/${org}/${site}/.snapshots/${name}${extPath}`;
@@ -162,6 +248,7 @@ export async function copyManifest(name, resources, direction) {
 
       acc.push(url);
     } catch {
+      // eslint-disable-next-line no-console
       console.log('error making url from manifest path');
     }
     return acc;
@@ -174,18 +261,16 @@ export async function copyManifest(name, resources, direction) {
 
 export async function updateSchedule(snapshotId, approved = false) {
   const adminURL = `${SNAPSHOT_SCHEDULER_URL}/schedule`;
+  const imsProfile = await loadIms();
   const body = {
     org,
     site,
     snapshotId,
     approved,
+    userId: imsProfile?.email,
   };
   const headers = { 'content-type': 'application/json' };
-  const resp = await daFetch(`${adminURL}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  const resp = await daFetch({ url: adminURL, opts: { method: 'POST', headers, body: JSON.stringify(body) } });
   const result = resp.headers.get('X-Error');
   return { status: resp.status, text: result };
 }
@@ -194,13 +279,14 @@ export async function getUserPublishPermission(path = '/') {
   try {
     // Use the admin.hlx.page status endpoint to check permissions
     const statusURL = `https://admin.hlx.page/status/${org}/${site}/main${path}`;
-    const resp = await daFetch(statusURL);
+    const resp = await daFetch({ url: statusURL });
     if (!resp.ok) return false;
 
     const json = await resp.json();
     // Check if 'write' is in the live.permissions array - this indicates publish permission
     return json.live?.permissions?.includes('write') || false;
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error checking user publish permission', error);
     return false;
   }
@@ -209,10 +295,71 @@ export async function getUserPublishPermission(path = '/') {
 export async function isRegistered() {
   try {
     const adminURL = `${SNAPSHOT_SCHEDULER_URL}/register/${org}/${site}`;
-    const resp = await daFetch(adminURL);
+    const resp = await daFetch({ url: adminURL });
     return resp.status === 200;
   } catch (error) {
+    // eslint-disable-next-line no-console
     console.error('Error checking if registered for snapshot scheduler', error);
+    return false;
+  }
+}
+
+const fetchDaConfigs = (() => {
+  const configCache = {};
+
+  const fetchConfig = async (pathname) => {
+    const resp = await daFetch({ url: `${DA_ORIGIN}/config${pathname}/` });
+    if (!resp.ok) return { error: `Error loading ${pathname}`, status: resp.status };
+    return resp.json();
+  };
+
+  return ({ org: _org, site: _site }) => {
+    // Set the org config promise if it does not exist
+    configCache[`/${_org}`] ??= fetchConfig(`/${_org}`);
+
+    if (_site) {
+      // Set the _site config promise if it does not exist
+      configCache[`/${_org}/${_site}`] ??= fetchConfig(`/${_org}/${_site}`);
+    }
+
+    // return array of cached configs (_org = 0, _site = 1)
+    const configs = [configCache[`/${_org}`]];
+    if (_site) configs.push(configCache[`/${_org}/${_site}`]);
+
+    return configs;
+  };
+})();
+
+export const getSheetByIndex = (json, index = 0) => {
+  if (json[':type'] !== 'multi-sheet') {
+    return json.data;
+  }
+  return json[Object.keys(json)[index]]?.data;
+};
+
+export const getFirstSheet = (json) => getSheetByIndex(json, 0);
+
+const getConfig = async (_org, _site) => {
+  const configs = await Promise.all(fetchDaConfigs({ org: _org, site: _site }));
+  return configs.flatMap((c) => getFirstSheet(c) || [])
+    .reduce((o, entry) => { o[entry.key] = entry.value; return o; }, {});
+};
+
+export async function checkSnapshotSource(name, path) {
+  const extPath = appendHtmlUnlessExtension(path);
+  try {
+    const resp = await source.getMetadata(`/${org}/${site}/.snapshots/${name}${extPath}`);
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function fetchLaunchPermission() {
+  try {
+    const config = await getConfig(org, site);
+    return config['snapshot.launch'] === 'true';
+  } catch {
     return false;
   }
 }

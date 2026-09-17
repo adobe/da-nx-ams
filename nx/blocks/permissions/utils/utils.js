@@ -1,5 +1,5 @@
-import { AEM_ORIGIN, DA_ORIGIN } from '../../../public/utils/constants.js';
-import { daFetch } from '../../../utils/daFetch.js';
+import { AEM_ORIGIN, DA_ORIGIN } from '../../../../nx2/public/utils/constants.js';
+import { daFetch } from '../../../../nx2/utils/api.js';
 
 // See: https://www.aem.live/docs/authentication-setup-authoring
 const AEM_ROLES = ['admin', 'basic_author', 'basic_publish', 'author', 'publish', 'develop', 'config', 'config_admin'];
@@ -51,8 +51,10 @@ async function formatAccess(resp) {
   return { users };
 }
 
-async function daUserConfig(path, opts = {}) {
-  return daFetch(`${DA_ORIGIN}/source${path}/.da/aem-permission-requests.json`, opts);
+const DA_PERMISSIONS_PATH = (path) => `${path}/.da/aem-permission-requests.json`;
+
+function daUserConfig(path, opts) {
+  return daFetch({ url: `${DA_ORIGIN}/source${DA_PERMISSIONS_PATH(path)}`, opts });
 }
 
 export async function getDaUsers(path) {
@@ -60,7 +62,9 @@ export async function getDaUsers(path) {
   if (!resp.ok) return [];
   return (await resp.json()).users?.data.map((user) => {
     const formatted = {
-      displayName: `${user['First Name']} ${user['Last Name']}`,
+      // Build from present parts only; an empty string lets user.js fall back
+      // to the email (a template literal would yield "undefined undefined").
+      displayName: [user['First Name'], user['Last Name']].filter(Boolean).join(' '),
       email: user.Email,
       id: user.Id,
     };
@@ -76,11 +80,11 @@ export async function getDaUsers(path) {
 }
 
 async function fetchAemOrg(org) {
-  return daFetch(`${AEM_ORIGIN}/config/${org}.json`);
+  return daFetch({ url: `${AEM_ORIGIN}/config/${org}.json` });
 }
 
 async function fetchAemSite(org, site) {
-  const resp = await daFetch(`${AEM_ORIGIN}/config/${org}/sites/${site}/access.json`);
+  const resp = await daFetch({ url: `${AEM_ORIGIN}/config/${org}/sites/${site}/access.json` });
   if (resp.status === 404) {
     return {
       ok: true,
@@ -107,7 +111,7 @@ async function saveToAem(path, json, method = 'POST') {
     opts.headers = { 'Content-Type': 'application/json' };
   }
 
-  return daFetch(`${AEM_ORIGIN}${path}`, opts);
+  return daFetch({ url: `${AEM_ORIGIN}${path}`, opts });
 }
 
 export async function getAemConfig(suppliedPath) {
@@ -133,7 +137,7 @@ function compareRoles(aemUser, daUser) {
 export function combineUsers(daUsers, aemUsers) {
   // Combine up all the existing AEM users that have new requests
   const combined = aemUsers.reduce((acc, aemUser) => {
-    const foundUser = daUsers.find((daUser) => daUser.id === aemUser.email);
+    const foundUser = daUsers.find((daUser) => daUser.email === aemUser.email);
 
     // If user wasn't found in DA users, push them to aemUsers.
     if (!foundUser) {
@@ -149,8 +153,8 @@ export function combineUsers(daUsers, aemUsers) {
   }, { daUsers: [], aemUsers: [] });
 
   const onlyRequests = daUsers.filter((daUser) => {
-    const inDaCombined = combined.daUsers.find((user) => daUser.id === user.id);
-    const inAemCombined = combined.aemUsers.find((user) => daUser.id === user.id);
+    const inDaCombined = combined.daUsers.find((user) => daUser.email === user.email);
+    const inAemCombined = combined.aemUsers.find((user) => daUser.email === user.email);
     return !inDaCombined && !inAemCombined && daUser.requested.length > 0;
   });
 
@@ -177,10 +181,8 @@ export async function clearRequests(path, user) {
 
   const body = new FormData();
   const data = new Blob([JSON.stringify(json)], { type: 'application/json' });
-
   body.set('data', data);
-  const opts = { method: 'POST', body };
-  return daUserConfig(path, opts);
+  return daUserConfig(path, { method: 'POST', body });
 }
 
 async function approveSiteUser(org, site, path, user) {
@@ -201,16 +203,18 @@ async function approveSiteUser(org, site, path, user) {
 
     if (found) {
       // If found, check to see if the user is already in the list.
-      const exists = existingRoleUsers.some((existingUser) => existingUser === user.id);
+      const exists = existingRoleUsers.some((existingUser) => existingUser === user.email);
 
       // It's possible there's nothing in the role, so set it if the user isn't already there
-      if (!exists) json.admin.role[role] = [...existingRoleUsers, user.id];
+      if (!exists) json.admin.role[role] = [...existingRoleUsers, user.email];
     } else {
       // Check to see if there are existing users in the current role
       if (!existingRoleUsers.length) return;
 
       // Ensure this user is removed if they've had the role taken away from them
-      json.admin.role[role] = existingRoleUsers.filter((existingUser) => existingUser !== user.id);
+      json.admin.role[role] = existingRoleUsers.filter(
+        (existingUser) => existingUser !== user.email,
+      );
     }
   });
 
@@ -223,13 +227,13 @@ async function approveSiteUser(org, site, path, user) {
 }
 
 async function approveOrgUser(org, path, user) {
-  const { id, aemId, requested = [], roles = [] } = user;
+  const { email, aemId, requested = [], roles = [] } = user;
   const approvedRoles = [...new Set([...requested, ...roles])];
 
   const pathBase = `/config/${org}/users`;
   const aemPath = aemId ? `${pathBase}/${aemId}.json` : `${pathBase}.json`;
 
-  const json = { email: id, roles: approvedRoles };
+  const json = { email, roles: approvedRoles };
   if (aemId) json.id = aemId;
 
   await clearRequests(path, user);

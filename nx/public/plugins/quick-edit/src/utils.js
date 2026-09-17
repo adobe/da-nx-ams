@@ -1,3 +1,23 @@
+import { MESSAGE_TYPES } from '../../../../utils/message-types.js';
+
+function removeQuickEditParam() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('quick-edit');
+  window.history.replaceState({}, '', url);
+}
+
+function navigateToAemPageOrReload() {
+  const currentUrl = new URL(window.location.href);
+  if (currentUrl.origin.endsWith('.preview.da.live')) {
+    const newOrigin = currentUrl.origin.replace('.preview.da.live', '.aem.page');
+    const newUrl = new URL(`${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`, `${newOrigin}/`);
+    newUrl.searchParams.delete('quick-edit');
+    window.location.replace(newUrl.href);
+  } else {
+    window.location.reload();
+  }
+}
+
 export function pollConnection(ctx, action) {
   ctx.initialized = false;
   let count = 0;
@@ -11,17 +31,97 @@ export function pollConnection(ctx, action) {
   }, 500);
 }
 
-export function setupCloseButton() {
+async function handlePreview(ctx) {
+  ctx.port.postMessage({ type: MESSAGE_TYPES.PREVIEW });
+  await new Promise((resolve) => {
+    const previewListener = (e) => {
+      if (e.data.type === MESSAGE_TYPES.PREVIEW) {
+        ctx.port.removeEventListener('message', previewListener);
+        if (e.data.payload?.ok) {
+          removeQuickEditParam();
+          navigateToAemPageOrReload();
+        } else {
+          // eslint-disable-next-line no-alert
+          alert(e.data.payload?.error);
+        }
+        resolve();
+      }
+    };
+    ctx.port.addEventListener('message', previewListener);
+  });
+}
+
+export function setupActions(ctx) {
+  const createButton = (className, text, callback) => {
+    const button = document.createElement('button');
+    button.className = className;
+    button.textContent = text;
+    button.addEventListener('click', callback);
+    return button;
+  };
+
+  // Create container
+  const container = document.createElement('div');
+  container.className = 'quick-edit-buttons';
+
+  // Create exit button
+  const exitButton = createButton('quick-edit-exit', 'Exit', () => {
+    removeQuickEditParam();
+    navigateToAemPageOrReload();
+  });
+  exitButton.style.display = 'none';
+
+  // Create preview button
+  const previewButton = createButton('quick-edit-preview', 'Preview', async () => {
+    previewButton.textContent = 'Previewing...';
+    previewButton.disabled = true;
+    await handlePreview(ctx);
+    previewButton.textContent = 'Preview';
+    previewButton.disabled = false;
+  });
+  previewButton.style.display = 'none';
+
+  // Create close button
   const button = document.createElement('button');
   button.className = 'quick-edit-close';
   button.title = 'Close Quick Edit';
-  
+
   const icon = document.createElement('i');
   icon.className = 'icon-close';
   button.appendChild(icon);
-  
+
+  // Add all buttons to container
+  container.appendChild(exitButton);
+  container.appendChild(previewButton);
+  container.appendChild(button);
+
+  let buttonsVisible = false;
+
   button.addEventListener('click', () => {
-    window.location.reload();
+    if (!buttonsVisible) {
+      exitButton.style.display = 'flex';
+      previewButton.style.display = 'flex';
+      button.classList.add('toggled');
+      buttonsVisible = true;
+    } else {
+      exitButton.style.display = 'none';
+      previewButton.style.display = 'none';
+      button.classList.remove('toggled');
+      buttonsVisible = false;
+    }
   });
-  document.body.appendChild(button);
+
+  document.body.appendChild(container);
+}
+
+export function parseIndex(value) {
+  const idx = parseInt(value, 10);
+  return Number.isNaN(idx) ? null : idx;
+}
+
+export function positionBox(box, rect) {
+  box.style.left = `${rect.left + window.scrollX}px`;
+  box.style.top = `${rect.top + window.scrollY}px`;
+  box.style.width = `${Math.max(rect.width, 1)}px`;
+  box.style.height = `${Math.max(rect.height, 1)}px`;
 }

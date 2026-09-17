@@ -1,21 +1,28 @@
-import { checkPermissions, signIn } from "./src/utils.js";
-import createProse from "./src/prose.js";
-import { updateDocument, updateCursors, updateState, handleUndoRedo, getEditor, handleCursorMove } from "./src/render.js";
-import { handleImageReplace } from "./src/images.js";
+import { checkPermissions, signIn, handlePreview, getImageCookie } from './src/utils.js';
+import createProse from './src/prose.js';
+import {
+  updateDocument, updateCursors, updateState, handleUndoRedo, getEditor, handleCursorMove,
+} from './src/render.js';
+import { handleImageReplace } from './src/images.js';
+import { MESSAGE_TYPES } from '../../utils/message-types.js';
 
 function onMessage(e, ctx) {
-  if (e.data.type === 'cursor-move') {
-    handleCursorMove(e.data, ctx);
-  } else if (e.data.type === 'reload') {
+  const { type, payload = {} } = e.data ?? {};
+
+  if (type === MESSAGE_TYPES.CURSOR_MOVE) {
+    handleCursorMove(payload, ctx);
+  } else if (type === MESSAGE_TYPES.RELOAD) {
     updateDocument(ctx);
-  } else if (e.data.type === 'image-replace') {
-    handleImageReplace(e.data, ctx);
-  } else if (e.data.type === 'get-editor') {
-    getEditor(e.data, ctx);
-  } else if (e.data.type === 'node-update') {
-    updateState(e.data, ctx);
-  } else if (e.data.type === 'history') {
-    handleUndoRedo(e.data, ctx);
+  } else if (type === MESSAGE_TYPES.IMAGE_REPLACE) {
+    handleImageReplace(payload, ctx);
+  } else if (type === MESSAGE_TYPES.GET_EDITOR) {
+    getEditor(payload, ctx);
+  } else if (type === MESSAGE_TYPES.NODE_UPDATE) {
+    updateState(payload, ctx);
+  } else if (type === MESSAGE_TYPES.HISTORY) {
+    handleUndoRedo(payload, ctx);
+  } else if (type === MESSAGE_TYPES.PREVIEW) {
+    handlePreview(ctx);
   }
 }
 
@@ -27,12 +34,12 @@ async function initProse(owner, repo, path, el, ctx) {
   const resp = await checkPermissions(sourceUrl);
   if (!resp.ok) return;
 
-  const permissions = resp.permissions;
+  const { permissions } = resp;
 
-  const { proseEl, wsProvider, view } = createProse({ 
-    path: sourceUrl, 
-    permissions, 
-    rerenderPage: () => updateDocument(ctx), 
+  const { proseEl, wsProvider, view } = createProse({
+    path: sourceUrl,
+    permissions,
+    rerenderPage: () => updateDocument(ctx),
     updateCursors: () => updateCursors(ctx),
     getEditor: (data) => getEditor(data, ctx),
   });
@@ -44,7 +51,7 @@ async function initProse(owner, repo, path, el, ctx) {
 }
 
 export default async function decorate(el) {
-  el.innerHTML = "Waiting for connection...";
+  el.innerHTML = 'Waiting for connection...';
 
   const ctx = {
     owner: null,
@@ -57,13 +64,15 @@ export default async function decorate(el) {
   await signIn();
 
   async function initPort(e) {
-    if (e.data?.init) {
+    const isInit = e.data?.type === MESSAGE_TYPES.INIT;
+    if (isInit) {
       const [port] = e.ports;
 
-      el.innerHTML = "";
+      el.innerHTML = '';
 
-      const mountPoint = e.data.init.mountpoint;
-      const path = e.data.location.pathname;
+      const { config, location } = e.data.payload ?? {};
+      const mountPoint = config?.mountpoint;
+      const path = location?.pathname;
 
       if (!mountPoint) {
         return;
@@ -71,7 +80,7 @@ export default async function decorate(el) {
 
       // Parse the mountpoint URL to extract owner and repo
       const url = new URL(mountPoint);
-      const pathSegments = url.pathname.split("/").filter(Boolean);
+      const pathSegments = url.pathname.split('/').filter(Boolean);
       const owner = pathSegments[0];
       const repo = pathSegments[1];
 
@@ -84,15 +93,17 @@ export default async function decorate(el) {
       ctx.path = path;
       ctx.port = port;
 
+      await getImageCookie(owner, repo);
+
       await initProse(owner, repo, path, el, ctx);
 
       // Going forward, all messages will be sent via the port
-      port.onmessage = (e) => onMessage(e, ctx);
+      port.onmessage = (event) => onMessage(event, ctx);
 
       // Tell the other side we are ready
-      port.postMessage({ ready: true });
+      port.postMessage({ type: MESSAGE_TYPES.READY });
     }
   }
   // set up message channel
-  window.addEventListener("message", initPort);
+  window.addEventListener('message', initPort);
 }

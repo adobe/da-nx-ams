@@ -1,10 +1,22 @@
-import makeBatches from '../../../../public/utils/batch.js';
+import makeBatches from '../../../../../nx2/public/utils/batch.js';
 
-async function throttle(ms = 500) {
-  return new Promise((resolve) => { setTimeout(() => { resolve(); }, ms); });
+export const GLAAS_DEBUG_LOG_KEY = 'glaas.log';
+
+export function shouldLogGLaaSRequests() {
+  try {
+    return localStorage.getItem(GLAAS_DEBUG_LOG_KEY) === 'true';
+  } catch {
+    return false;
+  }
 }
 
-function getOpts(clientid, token, body, contentType, method = 'GET') {
+export async function throttle(ms = 500) {
+  return new Promise((resolve) => {
+    setTimeout(() => { resolve(); }, ms);
+  });
+}
+
+export function getOpts(clientid, token, body, contentType, method = 'GET') {
   const opts = {
     method,
     headers: {
@@ -37,13 +49,14 @@ async function getSha256InHex(input) {
     .join('');
 }
 
-export async function createTask({ origin, clientid, token, task, service }) {
-  const { name, workflowName, workflow, targetLocales, businessUnit } = task;
+/** Shared callbackConfig + config for v1.2 and v2 multimodal task create. */
+export async function buildGlaasCreateMetadata({ task, service }) {
+  const { name, workflow, businessUnit } = task;
   const callbackConfig = [];
   const projectKeyKV = [];
-  if (service.preview) {
-    const [product = '', project = ''] = task?.workflow?.split('/') ?? [];
-    const projectHash = await getSha256InHex(`${product}-${project}-${task?.name}`);
+  if (service?.preview) {
+    const [product = '', project = ''] = workflow?.split('/') ?? [];
+    const projectHash = await getSha256InHex(`${product}-${project}-${name}`);
     projectKeyKV.push({
       key: 'dalocProjectKey',
       value: `v1/${projectHash}`,
@@ -52,6 +65,16 @@ export async function createTask({ origin, clientid, token, task, service }) {
     callbackConfig.push({ key: 'taskCallbackURL', value: hookUrl });
     callbackConfig.push({ key: 'assetCallbackURL', value: hookUrl });
   }
+  const config = [{
+    key: 'businessUnit',
+    value: businessUnit,
+  }, ...projectKeyKV];
+  return { callbackConfig, config };
+}
+
+export async function createTask({ origin, clientid, token, task, service }) {
+  const { name, workflowName, workflow, targetLocales } = task;
+  const { callbackConfig, config } = await buildGlaasCreateMetadata({ task, service });
 
   const body = {
     name,
@@ -59,10 +82,7 @@ export async function createTask({ origin, clientid, token, task, service }) {
     workflowName,
     contentSource: 'Adhoc',
     callbackConfig,
-    config: [{
-      key: 'businessUnit',
-      value: businessUnit,
-    }, ...projectKeyKV],
+    config,
   };
 
   const opts = getOpts(clientid, token, JSON.stringify(body), 'application/json', 'POST');
@@ -76,10 +96,13 @@ export async function createTask({ origin, clientid, token, task, service }) {
   }
 }
 
-export async function getTask({ origin, clientid, token, workflow, name }) {
+export async function getTask({
+  origin, clientid, token, workflow, name, service,
+}) {
+  const apiOrigin = service?.origin ?? origin;
   const opts = getOpts(clientid, token);
   try {
-    const resp = await fetch(`${origin}/api/l10n/v1.2/tasks/${workflow}/${name}`, opts);
+    const resp = await fetch(`${apiOrigin}/api/l10n/v1.2/tasks/${workflow}/${name}`, opts);
     const json = await resp.json();
     return { status: resp.status, json };
   } catch {
@@ -89,6 +112,75 @@ export async function getTask({ origin, clientid, token, workflow, name }) {
 
 // Helper function to ensure GLaaS compatibility with json extensions are converted to html
 export const getGlaasFilename = (daBasePath) => (daBasePath.endsWith('.html') ? daBasePath : `${daBasePath}.html`);
+
+/** AEM preview URL for GLaaS (v1.2 metadata and v2 multimodal create). */
+export function glaasSourcePreviewUrl(aemHref) {
+  if (!aemHref) return undefined;
+  return aemHref.replace(/\/index$/, '/');
+}
+
+async function readGlaasResponse(resp) {
+  const { status, statusText } = resp;
+  let body = '';
+  try {
+    body = await resp.text();
+  } catch (error) {
+    body = `[response read error: ${error?.message ?? error}]`;
+  }
+  let json;
+  try {
+    json = body ? JSON.parse(body) : undefined;
+  } catch {
+    json = undefined;
+  }
+  return { status, statusText, body, json };
+}
+
+function logGlaasAddAssetsRequest({
+  url, workflow, taskName, targetLocales, fileDetails, assetMetadata, daBasePath,
+}) {
+  if (!shouldLogGLaaSRequests()) return;
+  // eslint-disable-next-line no-console -- dev GLaaS handoff (glaas.log)
+  console.info('[GLaaS addAssets] request', {
+    daBasePath,
+    url,
+    workflow,
+    taskName,
+    targetLocales,
+    fileDetails,
+    assetMetadata: {
+      assetName: assetMetadata.assetName,
+      assetType: assetMetadata.assetType,
+      targetLocales: assetMetadata.targetLocales,
+      'source-preview-url': assetMetadata.metadata?.['source-preview-url'],
+      ...(assetMetadata.langMetadata && { langMetadata: assetMetadata.langMetadata }),
+      ...(assetMetadata.languageContext && { languageContext: assetMetadata.languageContext }),
+    },
+  });
+  // eslint-disable-next-line no-console -- dev GLaaS handoff (glaas.log)
+  console.info('[GLaaS addAssets] _asset_metadata_\n', JSON.stringify(assetMetadata, null, 2));
+}
+
+function logGlaasAddAssetsResponse({
+  daBasePath, ok, status, statusText, body, json,
+}) {
+  if (!shouldLogGLaaSRequests()) return;
+  const label = ok ? '[GLaaS addAssets] success' : '[GLaaS addAssets] error';
+  const detail = {
+    daBasePath,
+    status,
+    statusText,
+    ...(json && { json }),
+    ...(!json && body && { body }),
+  };
+  if (ok) {
+    // eslint-disable-next-line no-console -- intentional upload debug
+    console.info(label, detail);
+  } else {
+    // eslint-disable-next-line no-console -- intentional upload debug
+    console.error(label, detail);
+  }
+}
 
 export async function addAssets({
   origin,
@@ -117,27 +209,79 @@ export async function addAssets({
         assetName: glaasFilename,
         assetType: 'SOURCE',
         targetLocales,
-        metadata: { 'source-preview-url': item.aemHref.replace(/\/index$/, '/') },
       };
 
       // GLaaS v1.2
       body.append('file', file, glaasFilename);
 
+      const assetMetadata = {
+        assetName: glaasFilename,
+        metadata: { 'source-preview-url': glaasSourcePreviewUrl(item.aemHref) },
+        // GLaaS backward compatibility issue for WS (En-GB) - hence adding here as well.
+        assetType: 'SOURCE',
+        targetLocales,
+        ...(item.translationMetadata && { langMetadata: item.translationMetadata }),
+        ...(item.languageContext && { languageContext: item.languageContext }),
+      };
+      body.append('_asset_metadata_', new Blob(
+        [JSON.stringify(assetMetadata)],
+        { type: 'application/json' },
+      ));
+
       const opts = getOpts(clientid, token, body, null, 'POST');
       // Add fileDetails parameter for GLaaS v1.2
       const url = `${origin}/api/l10n/v1.2/tasks/${workflow}/${name}/assets?targetLanguages=${targetLocales.join(',')}&fileDetails=${encodeURIComponent(JSON.stringify(fileDetails))}`;
+      logGlaasAddAssetsRequest({
+        url,
+        workflow,
+        taskName: name,
+        targetLocales,
+        fileDetails,
+        assetMetadata,
+        daBasePath: item.daBasePath,
+      });
 
       try {
         const resp = await fetch(url, opts);
-        if (!resp.ok) throw new Error(resp.status);
-        return { status: resp.status };
-      } catch {
+        const response = await readGlaasResponse(resp);
+        logGlaasAddAssetsResponse({
+          daBasePath: item.daBasePath,
+          ok: resp.ok,
+          ...response,
+        });
+        if (!resp.ok) {
+          return {
+            error: 'There was an error uploading',
+            status: response.status,
+            glaasBody: response.body,
+          };
+        }
+        return { status: response.status };
+      } catch (error) {
+        if (shouldLogGLaaSRequests()) {
+          // eslint-disable-next-line no-console -- dev GLaaS handoff (glaas.log)
+          console.error('[GLaaS addAssets] error', {
+            daBasePath: item.daBasePath,
+            message: error?.message ?? String(error),
+          });
+        }
         return { error: 'There was an error uploading' };
       }
     }));
     task.sent += results.filter((result) => (result.status)).length;
     task.error += results.filter((result) => (result.error)).length;
     updateLangTask(task, task.langs);
+  }
+  if (shouldLogGLaaSRequests()) {
+    // eslint-disable-next-line no-console -- dev GLaaS handoff (glaas.log)
+    console.info('[GLaaS addAssets] batch complete', {
+      taskName: name,
+      workflow,
+      targetLocales,
+      sent: task.sent,
+      error: task.error,
+      status: task.error === 0 ? 'uploaded' : 'uploading-with-errors',
+    });
   }
   if (task.error === 0) task.status = 'uploaded';
 }
@@ -163,9 +307,10 @@ export async function updateStatus(service, token, task, newStatus = 'CREATED') 
     }
   }));
 
-  if (!results.some((result) => result.error)) task.status = 'created';
+  const ok = !results.some((result) => result.error);
+  if (ok) task.status = 'created';
 
-  return task;
+  return { task, ok, results };
 }
 
 export async function downloadAsset(service, token, task, path) {

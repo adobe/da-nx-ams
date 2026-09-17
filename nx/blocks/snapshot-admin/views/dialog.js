@@ -1,13 +1,12 @@
-// eslint-disable-next-line import/no-unresolved
-import { html, LitElement } from 'da-lit';
-import getStyle from '../../../utils/styles.js';
-import getSvg from '../../../utils/svg.js';
+import { html, LitElement, nothing } from 'da-lit';
+import getStyle from '../../../../nx2/public/utils/styles.js';
+import { getConfig } from '../../../../nx2/scripts/nx.js';
 
-const nx = `${new URL(import.meta.url).origin}/nx`;
-const sl = await getStyle(`${nx}/public/sl/styles.css`);
+const { nxBase, codeBase } = getConfig();
+const sl = await getStyle(`${nxBase}/public/sl/styles.css`);
 const style = await getStyle(import.meta.url);
 
-const ICONS = [`${nx}/img/icons/S2IconClose20N-icon.svg`];
+const CLOSE_ICON = `${codeBase}/img/icons/s2-icon-close-20-n.svg#icon`;
 
 class NxDialog extends LitElement {
   static properties = { details: { attribute: false } };
@@ -15,7 +14,6 @@ class NxDialog extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     this.shadowRoot.adoptedStyleSheets = [sl, style];
-    getSvg({ parent: this.shadowRoot, paths: ICONS });
   }
 
   updated(props) {
@@ -28,8 +26,8 @@ class NxDialog extends LitElement {
     }
   }
 
-  handleAction() {
-    const opts = { bubbles: true, composed: true };
+  handleAction(value) {
+    const opts = { bubbles: true, composed: true, detail: value };
     const event = new CustomEvent('action', opts);
     this.dispatchEvent(event);
     this._dialog.close();
@@ -39,17 +37,31 @@ class NxDialog extends LitElement {
     return this.shadowRoot.querySelector('sl-dialog');
   }
 
+  renderActions() {
+    if (this.details?.actions) {
+      return this.details.actions.map((action) => html`
+        <sl-button
+          class="${action.variant || 'default'}"
+          @click=${() => this.handleAction(action.value)}
+        >
+          ${action.label}
+        </sl-button>
+      `);
+    }
+    return html`<sl-button @click=${() => this.handleAction()}>OK</sl-button>`;
+  }
+
   render() {
     return html`
       <sl-dialog class="nx-snapshots-error">
-        <div class="nx-dialog">
+        <div class="nx-dialog" style=${this.details?.width ? `width:${this.details.width}` : nothing}>
           <div class="nx-dialog-header-area">
             <p class="sl-heading-l">${this.details?.heading}</p>
             <button
               class="nx-dialog-close-btn"
-              @click=${this.handleAction}
+              @click=${() => this.handleAction()}
               aria-label="Close dialog">
-              <svg class="icon"><use href="#S2IconClose20N-icon"/></svg>
+              <svg class="icon" viewBox="0 0 20 20" aria-hidden="true"><use href="${CLOSE_ICON}"></use></svg>
             </button>
           </div>
           <hr/>
@@ -57,7 +69,7 @@ class NxDialog extends LitElement {
             <p class="sl-body-s">${this.details?.message}</p>
           </div>
           <div class="nx-dialog-action-group">
-            <sl-button @click=${this.handleAction}>OK</sl-button>
+            ${this.renderActions()}
           </div>
         </div>
       </sl-dialog>

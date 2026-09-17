@@ -1,4 +1,4 @@
-import { Queue } from '../../../../public/utils/tree.js';
+import { Queue } from '../../../../../nx2/public/utils/tree.js';
 import { addDnt, removeDnt } from '../../dnt/dnt.js';
 
 export const dnt = { addDnt };
@@ -156,7 +156,7 @@ export async function saveItems({
   service,
   lang,
   urls,
-  saveToDa,
+  saveFn,
 }) {
   const { origin, projectId } = service;
 
@@ -173,7 +173,7 @@ export async function saveItems({
 
     url.sourceContent = await removeDnt({ org, site, html: text, ext: url.ext });
 
-    await saveToDa(url);
+    await saveFn(url);
   };
 
   const queue = new Queue(downloadCallback, 5);
@@ -230,7 +230,7 @@ export async function sendAllLanguages({ title, options, langs, urls, actions })
     lang.translation.status = accepted === urls.length ? 'created' : 'error';
   });
 
-  saveState({ options });
+  await saveState({ options });
 }
 
 export async function getStatusAll({ service, langs, urls, actions }) {

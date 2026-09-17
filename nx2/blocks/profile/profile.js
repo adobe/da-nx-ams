@@ -1,0 +1,233 @@
+import { LitElement, html, nothing } from 'da-lit';
+import { getConfig, loc } from '../../scripts/nx.js';
+import { loadIms, handleSignOut, handleSignIn } from '../../utils/ims.js';
+import { loadStyle } from '../../utils/utils.js';
+import { signout } from '../../utils/api.js';
+
+const config = getConfig();
+
+// Well-known, hardcoded path (not configurable) for the legal notices
+const LEGAL_NOTICES_PATH = '/fragments/nav/help';
+
+const style = await loadStyle(import.meta.url);
+const formStyle = await loadStyle(new URL('../../styles/form.css', import.meta.url).href);
+
+function ensureFormStyle() {
+  if (!document.adoptedStyleSheets.includes(formStyle)) {
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, formStyle];
+  }
+}
+
+async function openFragmentDialog(path) {
+  try {
+    const [{ loadFragment }] = await Promise.all([
+      import('../fragment/fragment.js'),
+      import('../shared/dialog/dialog.js'),
+    ]);
+    const fragment = await loadFragment(path);
+    if (!fragment) return;
+    ensureFormStyle();
+    const dialog = document.createElement('nx-dialog');
+    // Content-only dialog (no title/actions) - tighten the default panel
+    // padding so fragment content isn't swimming in whitespace.
+    dialog.style.setProperty('--nx-dialog-padding', 'var(--s2-spacing-400)');
+    dialog.append(...fragment.children);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'da-btn-secondary';
+    closeBtn.slot = 'actions';
+    closeBtn.textContent = 'Close';
+    closeBtn.addEventListener('click', () => dialog.close());
+    dialog.append(closeBtn);
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.append(dialog);
+  } catch {
+    config.log('Could not open fragment dialog.');
+  }
+}
+class NxProfile extends LitElement {
+  static properties = {
+    loginPopup: { type: Boolean },
+    _ims: { state: true },
+    _avatar: { state: true },
+    _openOrgs: { state: true },
+    _orgs: { state: true },
+  };
+
+  async connectedCallback() {
+    super.connectedCallback();
+    this.shadowRoot.adoptedStyleSheets = [style];
+    this.loadIms();
+  }
+
+  async loadIms() {
+    // Attempt to load IMS
+    try {
+      this._ims = await loadIms(this.loginPopup);
+    } catch {
+      config.log('Could not load IMS.');
+    }
+
+    if (!this._ims.anonymous) {
+      // Attempt to get avatar
+      try {
+        const { user } = await this._ims.getIo();
+        this._avatar = user.avatar;
+      } catch {
+        config.log('Could not get avatar');
+        this._avatar = '/public/icons/S2_Icon_User_20_N.svg';
+      }
+
+      this._orgs = (await this._ims.getOrgs()).data;
+    }
+    this.handleLoaded();
+  }
+
+  handleLoaded() {
+    this.classList.add('is-loaded');
+    const event = new CustomEvent('loaded', {
+      detail: this._ims,
+      bubbles: true,
+      composed: true,
+    });
+    this.dispatchEvent(event);
+  }
+
+  handleCopyUser() {
+    try {
+      const blob = new Blob([this._ims.userId], { type: 'text/plain' });
+      const data = [new ClipboardItem({ [blob.type]: blob })];
+      navigator.clipboard.write(data);
+      this._notice.classList.toggle('is-visible');
+      setTimeout(() => { this._notice.classList.toggle('is-visible'); }, 3000);
+    } catch {
+      config.log('Could not copy to clipboard');
+    }
+  }
+
+  async handleOrgSwitch(org) {
+    await window.adobeIMS.switchProfile(org.userId);
+    window.location.reload();
+  }
+
+  toggleOpenOrgs() {
+    this._openOrgs = !this._openOrgs;
+  }
+
+  async handleSignOut() {
+    try {
+      signout();
+    } catch {
+      config.log('Could not sign out');
+    }
+    handleSignOut();
+    const opts = { bubbles: true, composed: true };
+    const event = new CustomEvent('signout', opts);
+    this.dispatchEvent(event);
+  }
+
+  handleLegalNotices() {
+    openFragmentDialog(LEGAL_NOTICES_PATH);
+  }
+
+  handleScheme() {
+    let curr = localStorage.getItem('color-scheme');
+    if (!curr) {
+      curr = matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark-scheme' : 'light-scheme';
+    }
+
+    const next = curr === 'dark-scheme' ? 'light-scheme' : 'dark-scheme';
+    document.body.classList.remove('dark-scheme', 'light-scheme');
+    document.body.classList.add(next);
+    localStorage.setItem('color-scheme', next);
+  }
+
+  get _org() {
+    return this._orgs?.find((org) => org.userId === this._ims.userId);
+  }
+
+  get _notice() {
+    return this.shadowRoot.querySelector('.nx-menu-clipboard-notice');
+  }
+
+  renderOrg() {
+    return html`
+      <button class="nx-menu-btn nx-menu-btn-org" @click=${this.toggleOpenOrgs}>
+        <p class="nx-org-title">Organization</p>
+        <p class="nx-org-name">${this._org.description}</p>
+        <svg class="icon" title="Switch organizations"><use href="#S2IconSwitch20N-icon"/></svg>
+      </button>
+    `;
+  }
+
+  renderOrgSwitcher() {
+    return html`
+      <div class="nx-menu-all-orgs">
+        <p class="nx-all-orgs-title">
+          Switch Organization
+          <button class="nx-all-orgs-cancel" @click=${this.toggleOpenOrgs}>Cancel</button>
+        </p>
+        <div class="nx-menu-all-orgs-inner">
+          ${this._orgs.map((org) => html`
+            <button class="nx-orgs-btn-switch" @click=${() => this.handleOrgSwitch(org)}>
+              ${org.description}
+            </button>
+          `)}
+        </div>
+      </div>
+    `;
+  }
+
+  renderSignIn() {
+    return html`
+      <button class="signin-btn" @click=${handleSignIn}>${loc`Sign in`}</button>
+    `;
+  }
+
+  render() {
+    if (!this._ims) return nothing;
+    if (this._ims.anonymous) return this.renderSignIn();
+    return html`
+      <div class="nx-profile">
+        <button id="profile-btn" class="nx-btn-profile" aria-label="Open profile menu" popovertarget="nx-menu-profile">
+          <img src="${this._avatar}" alt="" />
+        </button>
+        <div id="nx-menu-profile" popover>
+          <div class="nx-menu-details-wrapper">
+            <p class="nx-menu-clipboard-notice">User ID copied to clipboard.</p>
+            <button class="nx-menu-btn nx-menu-btn-details" @click=${this.handleCopyUser}>
+              <picture>
+                <img src="${this._avatar}" alt="Profile photo" />
+              </picture>
+              <div class="nx-menu-details-name">
+                <p class="nx-display-name">${this._ims.displayName}</p>
+                <p class="nx-email">${this._ims.email}</p>
+              </div>
+              <svg class="icon" title="Share profile"><use href="#S2IconShare20N-icon"/></svg>
+            </button>
+          </div>
+          ${this._org && !this._openOrgs ? this.renderOrg() : nothing}
+          ${this._openOrgs ? this.renderOrgSwitcher() : nothing}
+          <div class="nx-menu-links">
+            <p class="nx-menu-link-title">Links</p>
+            <ul>
+              <li><a href="https://account.adobe.com/" target="_blank">Account</a></li>
+              <li><a href="https://experience.adobe.com/#/preferences" target="_blank">Preferences</a></li>
+              <li><a href="https://adminconsole.adobe.com" target="_blank">Admin Console</a></li>
+              <li><button class="nx-menu-link-btn" @click=${this.handleLegalNotices}>Legal notices</button></li>
+            </ul>
+          </div>
+          <button class="nx-menu-btn nx-menu-btn-signout" @click=${this.handleSignOut}>${loc`Sign out`}</button>
+        </div>
+      </div>
+    `;
+  }
+}
+
+customElements.define('nx-profile', NxProfile);
+
+export default async function init(a) {
+  const cmp = document.createElement('nx-profile');
+  a.parentElement.replaceChild(cmp, a);
+}

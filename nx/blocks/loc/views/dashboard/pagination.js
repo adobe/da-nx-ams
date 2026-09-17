@@ -1,10 +1,8 @@
-import { LitElement, html, nothing } from '../../../../deps/lit/lit-core.min.js';
-import { getConfig } from '../../../../scripts/nexter.js';
-import getStyle from '../../../../utils/styles.js';
+import { LitElement, html, nothing } from 'da-lit';
+import { loadStyle } from '../../../../../nx2/utils/utils.js';
 
-const { nxBase } = getConfig();
-const style = await getStyle(import.meta.url);
-const buttons = await getStyle(`${nxBase}/styles/buttons.js`);
+const style = await loadStyle(import.meta.url);
+const buttons = await loadStyle(new URL('./buttons.css', import.meta.url).href);
 
 const ELLIPSIS_HTML = html`<span class="pagination-ellipsis">. . .</span>`;
 
@@ -25,7 +23,7 @@ class NxPagination extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
-    this.shadowRoot.adoptedStyleSheets = [style, buttons];
+    this.shadowRoot.adoptedStyleSheets = [buttons, style];
   }
 
   get totalPages() {
@@ -33,7 +31,8 @@ class NxPagination extends LitElement {
   }
 
   get visiblePages() {
-    // Maximum visible elements: first page + ellipsis + (current ± surroundingPages) + ellipsis + last page
+    // Maximum visible elements: first page + ellipsis +
+    // (current ± surroundingPages) + ellipsis + last page
     const maxVisible = 3 + (this.surroundingPages * 2);
 
     // Show all pages if we have fewer than the maximum visible
@@ -46,8 +45,9 @@ class NxPagination extends LitElement {
 
   /**
    * Calculate which page numbers should be visible in the pagination control.
-   * Target: Always show first, last, and current page, plus surroundingPages on each side of current.
-   * When near boundaries, extend the range to maintain consistent button count.
+   * Target: Always show first, last, and current page, plus surroundingPages
+   * on each side of current. When near boundaries, extend the range to
+   * maintain consistent button count.
    */
   calculateVisiblePages() {
     const firstPage = 0;
