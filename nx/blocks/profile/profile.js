@@ -4,10 +4,15 @@ import getStyle from '../../utils/styles.js';
 import { getSvg } from '../../utils/svg.js';
 import { daFetch } from '../../utils/daFetch.js';
 import { DA_ORIGIN } from '../../public/utils/constants.js';
-import { loadIms, handleSignIn, handleSignOut } from '../../utils/ims.js';
+import { resolveAuthProvider } from '../../utils/helix-admin-auth.js';
 
 const { nxBase } = getConfig();
 const style = await getStyle(import.meta.url);
+
+// Well-known, hardcoded path (not configurable) — same content nx2's profile.js links to.
+// Account/Preferences/Admin Console are hidden for the alt provider (see render below), so
+// this is what keeps the Links section from rendering empty for those users.
+const LEGAL_NOTICES_PATH = '/fragments/nav/help';
 
 const ICONS = [
   `${nxBase}/img/icons/S2IconShare20N-icon.svg`,
@@ -22,6 +27,7 @@ class NxProfile extends LitElement {
     _avatar: { state: true },
     _org: { state: true },
     _orgs: { state: true },
+    _useAlt: { state: true },
   };
 
   async connectedCallback() {
@@ -37,21 +43,34 @@ class NxProfile extends LitElement {
 
   async getDetails() {
     try {
-      this._details = await loadIms(this.loginPopup);
+      // Resolved once here, before this component ever renders a Sign In button — so its
+      // click handler below binds to an already-settled provider, safe to call directly from
+      // the click itself (see helix-admin-auth.js's resolveAuthProvider() for why that
+      // ordering matters for the alt provider's popup).
+      const { useAlt, authModule } = await resolveAuthProvider();
+      this._authModule = authModule;
+      this._useAlt = useAlt;
+      this._details = await authModule.loadIms(this.loginPopup);
       if (this._details.anonymous) {
         this._signedIn = false;
         return;
       }
-      try {
-        const { user } = await this._details.getIo();
-        this._avatar = user.avatar;
-      } catch {
-        // eslint-disable-next-line no-console
-        console.log('Could not get avatar');
-        this._avatar = `${nxBase}/public/icons/S2_Icon_User_20_N.svg`;
+      // The alt provider's token only carries enough to authenticate requests, not the rich
+      // profile fields (avatar, org list) real IMS provides — nothing to fetch for it here.
+      // Don't fabricate placeholder org/avatar data — a caller reading blank fields is more
+      // honest than one reading fake-looking ones.
+      if (!useAlt) {
+        try {
+          const { user } = await this._details.getIo();
+          this._avatar = user.avatar;
+        } catch {
+          // eslint-disable-next-line no-console
+          console.log('Could not get avatar');
+          this._avatar = `${nxBase}/public/icons/S2_Icon_User_20_N.svg`;
+        }
+        this.getOrg();
       }
       this._signedIn = true;
-      this.getOrg();
       this.setIcons();
     } catch {
       this._signedIn = false;
@@ -76,7 +95,10 @@ class NxProfile extends LitElement {
 
   handleCopyUser() {
     try {
-      const blob = new Blob([this._details.userId], { type: 'text/plain' });
+      // The alt provider has no adobe.io userId (see loadIms above) — email is the closest
+      // thing it has to a stable identifier, rather than copying the literal string "undefined".
+      const id = this._details.userId || this._details.email;
+      const blob = new Blob([id], { type: 'text/plain' });
       const data = [new ClipboardItem({ [blob.type]: blob })];
       navigator.clipboard.write(data);
       this._notice.classList.toggle('is-visible');
@@ -102,7 +124,7 @@ class NxProfile extends LitElement {
     } catch {
       // logout did not work.
     }
-    handleSignOut();
+    this._authModule?.handleSignOut();
     const opts = { bubbles: true, composed: true };
     const event = new CustomEvent('signout', opts);
     this.dispatchEvent(event);
@@ -112,9 +134,18 @@ class NxProfile extends LitElement {
     return this.shadowRoot.querySelector('.nx-menu-clipboard-notice');
   }
 
+  // The alt provider has no photo to show (see getDetails above) — initials are a real signal
+  // derived from what we do have, rather than a placeholder image implying a photo exists.
+  get _initials() {
+    const source = this._details?.displayName || this._details?.email || '';
+    const words = source.trim().split(/\s+/).filter(Boolean);
+    if (words.length > 1) return (words[0][0] + words[1][0]).toUpperCase();
+    return source.slice(0, 2).toUpperCase();
+  }
+
   renderSignIn() {
     return html`
-      <button class="nx-btn-signin" @click=${handleSignIn}>Sign in</button>
+      <button class="nx-btn-signin" @click=${this._authModule?.handleSignIn}>Sign in</button>
     `;
   }
 
@@ -152,15 +183,17 @@ class NxProfile extends LitElement {
     return html`
       <div class="nx-profile">
         <button class="nx-btn-profile" aria-label="Open profile menu" popovertarget="nx-menu-profile">
-          <img src="${this._avatar}" alt="" />
+          ${this._useAlt
+            ? html`<span class="nx-avatar-initials">${this._initials}</span>`
+            : html`<img src="${this._avatar}" alt="" />`}
         </button>
         <div id="nx-menu-profile" popover>
           <div class="nx-menu-details-wrapper">
             <p class="nx-menu-clipboard-notice">User ID copied to clipboard.</p>
             <button class="nx-menu-btn nx-menu-btn-details" @click=${this.handleCopyUser}>
-              <picture>
-                <img src="${this._avatar}" alt="Profile photo" />
-              </picture>
+              ${this._useAlt
+                ? html`<span class="nx-avatar-initials nx-avatar-initials-lg">${this._initials}</span>`
+                : html`<picture><img src="${this._avatar}" alt="Profile photo" /></picture>`}
               <div class="nx-menu-details-name">
                 <p class="nx-display-name">${this._details.displayName}</p>
                 <p class="nx-email">${this._details.email}</p>
@@ -173,9 +206,10 @@ class NxProfile extends LitElement {
           <div class="nx-menu-links">
             <p class="nx-menu-link-title">Links</p>
             <ul>
-              <li><a href="https://account.adobe.com/" target="_blank">Account</a></li>
-              <li><a href="https://experience.adobe.com/#/preferences" target="_blank">Preferences</a></li>
-              <li><a href="https://adminconsole.adobe.com" target="_blank">Admin Console</a></li>
+              ${!this._useAlt ? html`<li><a href="https://account.adobe.com/" target="_blank">Account</a></li>` : nothing}
+              ${!this._useAlt ? html`<li><a href="https://experience.adobe.com/#/preferences" target="_blank">Preferences</a></li>` : nothing}
+              ${!this._useAlt ? html`<li><a href="https://adminconsole.adobe.com" target="_blank">Admin Console</a></li>` : nothing}
+              <li><a href="${LEGAL_NOTICES_PATH}" target="_blank">Legal notices</a></li>
             </ul>
           </div>
           <button class="nx-menu-btn nx-menu-btn-signout" @click=${this.handleSignOut}>Sign out</button>
