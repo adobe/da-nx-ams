@@ -1,4 +1,4 @@
-import { loadIms } from '../../utils/ims.js';
+import { loadIdentity, getAgentToken } from './utils/identity.js';
 import {
   AGENT_EVENT, PART_TYPE, ROLE, TOOL_NAME, TOOL_STATE,
 } from './constants.js';
@@ -117,7 +117,7 @@ export default class ChatController {
 
   async _getRoom() {
     if (this._room) return this._room;
-    const { userId } = await loadIms();
+    const { userId } = await loadIdentity();
     const { org, site } = this._context ?? {};
     this._room = getRoomKey({ org, site, userId });
     return this._room;
@@ -389,7 +389,8 @@ export default class ChatController {
   }
 
   async _stream(pageContext) {
-    const [{ accessToken }, room] = await Promise.all([loadIms(), this._getRoom()]);
+    const [{ accessToken }, room] = await Promise.all([loadIdentity(), this._getRoom()]);
+    const imsToken = await getAgentToken(accessToken, this._context);
     this._abortController = new AbortController();
 
     const resp = await fetch(AGENT_URL, {
@@ -398,7 +399,7 @@ export default class ChatController {
       body: JSON.stringify({
         messages: this._messagesForAgent(),
         pageContext,
-        imsToken: accessToken?.token ?? null,
+        imsToken,
         room,
         sessionId: this._sessionId,
         ...(this._requestedSkills?.length ? { requestedSkills: this._requestedSkills } : {}),
